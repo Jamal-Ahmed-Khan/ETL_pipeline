@@ -1,0 +1,84 @@
+# .github/workflows/ci_cd.yml
+#
+# CI/CD pipeline for the repository that contains `performance.ipynb`.
+# ───────────────────────────────────────────────────────────────────
+# What it does
+# 1. Fires on every push/PR to the main branch (plus manual runs).
+# 2. Sets up Python 3.12 and caches pip downloads.
+# 3. Spins up a MongoDB container for code that needs it.
+# 4. Installs dependencies from requirements.txt (or a sensible fallback).
+# 5. Executes the notebook head‑to‑tail; if *any* cell errors, the build fails.
+# 6. Uploads the executed notebook as the “performance-report” artefact.
+#
+# How to trigger
+# • Push to `main`   → runs automatically.
+# • Open a PR into `main` → runs automatically.
+# • From the **Actions** tab → “Run workflow” button (manual / ad‑hoc).
+#
+# To extend
+# • Add test steps (pytest, flake8, etc.) before the notebook run.
+# • Add a second job (e.g. “deploy”) that depends on `build-test` for CD.
+# • Replace the MongoDB service with any other service containers you need.
+#
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    # Service containers that live for the duration of this job
+    services:
+      mongo:
+        image: mongo:7
+        ports: [ "27017:27017" ]
+        options: >-
+          --health-cmd="mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: ☑️  Check out code
+        uses: actions/checkout@v4
+
+      - name: 🐍  Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 📦  Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: 📥  Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            # Fallback for when no requirements.txt is present
+            pip install pandas numpy matplotlib requests pymongo nbconvert jupyter
+          fi
+
+      - name: ▶️  Execute notebook
+        # Any error inside the notebook will make the workflow fail
+        run: |
+          jupyter nbconvert --to notebook --execute performance.ipynb \
+                           --output performance_output.ipynb \
+                           --ExecutePreprocessor.timeout=1200
+
+      - name: 📤  Upload executed notebook
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: performance_output.ipynb
